@@ -2915,7 +2915,7 @@ server_client_reset_state(struct client *c)
 	struct screen		*s = NULL;
 	struct options		*oo = c->session->options;
 	int			 mode = 0, cursor, flags;
-	u_int			 cx = 0, cy = 0, ox, oy, sx, sy, n;
+	u_int			 cx = 0, cy = 0, ox, oy, sx, sy, n, cursor_cy, pano_off;
 
 	if (c->flags & (CLIENT_CONTROL|CLIENT_SUSPENDED))
 		return;
@@ -2959,12 +2959,35 @@ server_client_reset_state(struct client *c)
 	} else if (c->overlay_draw == NULL) {
 		cursor = 0;
 		tty_window_offset(tty, &ox, &oy, &sx, &sy);
-		if (wp->xoff + s->cx >= ox && wp->xoff + s->cx <= ox + sx &&
-		    wp->yoff + s->cy >= oy && wp->yoff + s->cy <= oy + sy) {
+
+		/*
+		 * For panorama mode, cursor ONLY appears on master pane (right).
+		 * Slave pane is display-only and never shows cursor.
+		 */
+		cursor_cy = s->cy;
+		if (wp->panorama_role == PANORAMA_MASTER &&
+		    wp->panorama_sibling != NULL) {
+			struct window_pane *slave = wp->panorama_sibling;
+			pano_off = slave->sy;
+			if (s->cy >= pano_off && s->cy < pano_off + wp->sy) {
+				/* Cursor in master's visible area - show it */
+				cursor_cy = s->cy - pano_off;
+			} else {
+				/* Cursor outside master's range - hide it */
+				cursor_cy = wp->sy;
+			}
+		} else if (wp->panorama_role == PANORAMA_SLAVE) {
+			/* Slave pane NEVER shows cursor */
+			cursor_cy = wp->sy;
+		}
+
+		if (!cursor &&
+		    wp->xoff + s->cx >= ox && wp->xoff + s->cx <= ox + sx &&
+		    wp->yoff + cursor_cy >= oy && wp->yoff + cursor_cy < oy + sy) {
 			cursor = 1;
 
 			cx = wp->xoff + s->cx - ox;
-			cy = wp->yoff + s->cy - oy;
+			cy = wp->yoff + cursor_cy - oy;
 
 			if (status_at_line(c) == 0)
 				cy += status_line_size(c);

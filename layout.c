@@ -1085,6 +1085,10 @@ layout_close_pane(struct window_pane *wp)
 {
 	struct window	*w = wp->window;
 
+	/* Skip if pane has no layout cell (e.g., panorama slave being destroyed) */
+	if (wp->layout_cell == NULL)
+		return;
+
 	/* Remove the cell. */
 	layout_destroy_cell(w, wp->layout_cell, &w->layout_root);
 

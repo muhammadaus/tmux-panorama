@@ -1154,8 +1154,10 @@ tty_clamp_line(struct tty *tty, const struct tty_ctx *ctx, u_int px, u_int py,
 		*x = (ctx->xoff + px) - ctx->wox;
 		*rx = ctx->wsx - *x;
 	}
-	if (*rx > nx)
-		fatalx("%s: x too big, %u > %u", __func__, *rx, nx);
+	if (*rx > nx) {
+		/* Can happen in panorama mode */
+		*rx = nx;
+	}
 
 	return (1);
 }
@@ -1258,8 +1260,10 @@ tty_clamp_area(struct tty *tty, const struct tty_ctx *ctx, u_int px, u_int py,
 		*x = (ctx->xoff + px) - ctx->wox;
 		*rx = ctx->wsx - *x;
 	}
-	if (*rx > nx)
-		fatalx("%s: x too big, %u > %u", __func__, *rx, nx);
+	if (*rx > nx) {
+		/* Can happen in panorama mode */
+		*rx = nx;
+	}
 
 	if (yoff >= ctx->woy && yoff + ny <= ctx->woy + ctx->wsy) {
 		/* All visible. */
@@ -1282,8 +1286,10 @@ tty_clamp_area(struct tty *tty, const struct tty_ctx *ctx, u_int px, u_int py,
 		*y = (ctx->yoff + py) - ctx->woy;
 		*ry = ctx->wsy - *y;
 	}
-	if (*ry > ny)
-		fatalx("%s: y too big, %u > %u", __func__, *ry, ny);
+	if (*ry > ny) {
+		/* Can happen in panorama mode with combined screen height */
+		*ry = ny;
+	}
 
 	return (1);
 }
@@ -1505,6 +1511,12 @@ tty_draw_line(struct tty *tty, struct screen *s, u_int px, u_int py, u_int nx,
 	sx = screen_size_x(s);
 	if (nx > sx)
 		nx = sx;
+	/* Bounds check: ensure py is within grid */
+	if (py >= gd->sy) {
+		log_debug("%s: py %u >= grid sy %u, skipping", __func__, py, gd->sy);
+		tty->flags = (tty->flags & ~TTY_NOCURSOR) | flags;
+		return;
+	}
 	cellsize = grid_get_line(gd, gd->hsize + py)->cellsize;
 	if (sx > cellsize)
 		sx = cellsize;

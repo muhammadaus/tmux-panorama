@@ -17,6 +17,7 @@
  */
 
 #include <sys/types.h>
+#include <sys/ioctl.h>
 
 #include <errno.h>
 #include <fcntl.h>
@@ -39,8 +40,8 @@ const struct cmd_entry cmd_split_window_entry = {
 	.name = "split-window",
 	.alias = "splitw",
 
-	.args = { "bc:de:fF:hIl:p:Pt:vZ", 0, -1, NULL },
-	.usage = "[-bdefhIPvZ] [-c start-directory] [-e environment] "
+	.args = { "bc:de:fF:hIl:p:Pt:vWZ", 0, -1, NULL },
+	.usage = "[-bdefhIPvWZ] [-c start-directory] [-e environment] "
 		 "[-F format] [-l size] " CMD_TARGET_PANE_USAGE
 		 " [shell-command [argument ...]]",
 
@@ -72,8 +73,8 @@ cmd_split_window_exec(struct cmd *self, struct cmdq_item *item)
 	u_int			 count = args_count(args), curval = 0;
 
 	type = LAYOUT_TOPBOTTOM;
-	if (args_has(args, 'h'))
-		type = LAYOUT_LEFTRIGHT;
+	if (args_has(args, 'h') || args_has(args, 'W'))
+		type = LAYOUT_LEFTRIGHT;  /* Panorama mode always uses horizontal split */
 
 	/* If the 'p' flag is dropped then this bit can be moved into 'l'. */
 	if (args_has(args, 'l') || args_has(args, 'p')) {
@@ -116,11 +117,85 @@ cmd_split_window_exec(struct cmd *self, struct cmdq_item *item)
 		flags |= SPAWN_FULLSIZE;
 	if (input || (count == 1 && *args_string(args, 0) == '\0'))
 		flags |= SPAWN_EMPTY;
+	/* Panorama: put slave on LEFT so master (with cursor) is on RIGHT */
+	if (args_has(args, 'W'))
+		flags |= SPAWN_BEFORE;
+
+	/*
+	 * For panorama mode, save original dimensions before layout_split_pane
+	 * resizes the master pane. We need the original width to calculate
+	 * the combined PTY width (original * 2).
+	 */
+	u_int	panorama_original_sx = wp->sx;
+	u_int	panorama_original_sy = wp->sy;
 
 	lc = layout_split_pane(wp, type, size, flags);
 	if (lc == NULL) {
 		cmdq_error(item, "no space for new pane");
 		return (CMD_RETURN_ERROR);
+	}
+
+	/* Panorama mode: create a slave pane sharing master's PTY */
+	if (args_has(args, 'W')) {
+		struct winsize	 ws;
+		u_int		 new_sx = lc->sx, new_sy = lc->sy;
+		u_int		 combined_sx;
+
+		/* Create panorama slave pane */
+		new_wp = window_pane_create_panorama_slave(w, wp, new_sx, new_sy);
+		if (new_wp == NULL) {
+			cmdq_error(item, "create panorama pane failed");
+			return (CMD_RETURN_ERROR);
+		}
+
+		/* Add to window's pane list - slave goes BEFORE master (left side) */
+		TAILQ_INSERT_BEFORE(wp, new_wp, entry);
+
+		/* Properly integrate slave pane into layout system */
+		layout_make_leaf(lc, new_wp);
+		layout_fix_panes(w, NULL);
+
+		/*
+		 * Resize master's PTY to combined height (vertical panorama).
+		 * Both panes are side-by-side but share a PTY with doubled height,
+		 * allowing viewing of more rows at once.
+		 * Use saved original height to ensure we get 2x the pre-split height.
+		 */
+		u_int combined_sy = panorama_original_sy * 2;
+		ws.ws_col = wp->sx;  /* Same width as pane */
+		ws.ws_row = combined_sy;  /* Combined height for PTY */
+		ws.ws_xpixel = 0;
+		ws.ws_ypixel = 0;
+		if (wp->fd != -1)
+			ioctl(wp->fd, TIOCSWINSZ, &ws);
+
+		/* Resize master's screen to combined height */
+		screen_resize(&wp->base, wp->sx, combined_sy, 0);
+
+		/* Move cursor to master's visible area (right pane) */
+		if (wp->base.cy < panorama_original_sy)
+			wp->base.cy = panorama_original_sy;
+
+		/* Update slave's row offset to be master's visible height */
+		new_wp->panorama_row_offset = panorama_original_sy;
+
+		if (!args_has(args, 'd'))
+			cmd_find_from_winlink_pane(current, wl, wp, 0);  /* wp is master */
+		window_pop_zoom(wp->window);
+		server_redraw_window(wp->window);
+		server_status_session(s);
+
+		if (args_has(args, 'P')) {
+			if ((template = args_get(args, 'F')) == NULL)
+				template = SPLIT_WINDOW_TEMPLATE;
+			cp = format_single(item, template, tc, s, wl, new_wp);
+			cmdq_print(item, "%s", cp);
+			free(cp);
+		}
+
+		cmd_find_from_winlink_pane(&fs, wl, wp, 0);  /* Use master for hook */
+		cmdq_insert_hook(s, item, &fs, "after-split-window");
+		return (CMD_RETURN_NORMAL);
 	}
 
 	sc.item = item;

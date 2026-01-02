@@ -343,8 +343,10 @@ window_destroy(struct window *w)
 	window_unzoom(w, 0);
 	RB_REMOVE(windows, &windows, w);
 
-	if (w->layout_root != NULL)
+	if (w->layout_root != NULL) {
 		layout_free_cell(w->layout_root);
+		w->layout_root = NULL;  /* Mark as freed for panorama cleanup */
+	}
 	if (w->saved_layout_root != NULL)
 		layout_free_cell(w->saved_layout_root);
 	free(w->old_layout);
@@ -432,15 +434,20 @@ window_pane_send_resize(struct window_pane *wp, u_int sx, u_int sy)
 {
 	struct window	*w = wp->window;
 	struct winsize	 ws;
+	u_int		 actual_sy = sy;
 
 	if (wp->fd == -1)
 		return;
 
-	log_debug("%s: %%%u resize to %u,%u", __func__, wp->id, sx, sy);
+	/* For panorama master, use combined height instead of layout cell height */
+	if (wp->panorama_role == PANORAMA_MASTER && wp->panorama_sibling != NULL)
+		actual_sy = sy + wp->panorama_sibling->sy;
+
+	log_debug("%s: %%%u resize to %u,%u (actual_sy=%u)", __func__, wp->id, sx, sy, actual_sy);
 
 	memset(&ws, 0, sizeof ws);
 	ws.ws_col = sx;
-	ws.ws_row = sy;
+	ws.ws_row = actual_sy;
 	ws.ws_xpixel = w->xpixel * ws.ws_col;
 	ws.ws_ypixel = w->ypixel * ws.ws_row;
 	if (ioctl(wp->fd, TIOCSWINSZ, &ws) == -1)
@@ -521,6 +528,10 @@ window_set_active_pane(struct window *w, struct window_pane *wp, int notify)
 	struct window_pane *lastwp;
 
 	log_debug("%s: pane %%%u", __func__, wp->id);
+
+	/* Panorama slave cannot be active - redirect to master */
+	if (wp->panorama_role == PANORAMA_SLAVE && wp->panorama_sibling != NULL)
+		wp = wp->panorama_sibling;
 
 	if (wp == w->active)
 		return (0);
@@ -769,6 +780,11 @@ window_lost_pane(struct window *w, struct window_pane *wp)
 			if (w->active == NULL)
 				w->active = TAILQ_NEXT(wp, entry);
 		}
+		/* Don't select panorama slave - redirect to master */
+		if (w->active != NULL &&
+		    w->active->panorama_role == PANORAMA_SLAVE &&
+		    w->active->panorama_sibling != NULL)
+			w->active = w->active->panorama_sibling;
 		if (w->active != NULL) {
 			window_pane_stack_remove(&w->last_panes, w->active);
 			w->active->flags |= PANE_CHANGED;
@@ -955,6 +971,11 @@ window_pane_create(struct window *w, u_int sx, u_int sy, u_int hlimit)
 	style_set_scrollbar_style_from_option(&wp->scrollbar_style,
 	    wp->options);
 
+	/* Initialize panorama fields */
+	wp->panorama_role = PANORAMA_NONE;
+	wp->panorama_sibling = NULL;
+	wp->panorama_row_offset = 0;
+
 	colour_palette_init(&wp->palette);
 	colour_palette_from_option(&wp->palette, wp->options);
 
@@ -976,6 +997,29 @@ window_pane_destroy(struct window_pane *wp)
 	struct window_pane_resize	*r;
 	struct window_pane_resize	*r1;
 
+	/* Handle panorama sibling cleanup */
+	if (wp->panorama_role == PANORAMA_MASTER && wp->panorama_sibling != NULL) {
+		/* Master destroyed: destroy slave too */
+		struct window_pane *slave = wp->panorama_sibling;
+		slave->panorama_sibling = NULL;
+		slave->panorama_role = PANORAMA_NONE;
+		wp->panorama_sibling = NULL;
+		/*
+		 * Only destroy slave if NOT in window_destroy path.
+		 * During window_destroy, layout_root is freed first (set to NULL
+		 * after layout_free_cell), and slave will be destroyed by
+		 * window_destroy_panes anyway. Skip to avoid dangling pointers.
+		 */
+		if (wp->window->layout_root != NULL) {
+			slave->flags |= PANE_EXITED;
+			server_destroy_pane(slave, 1);
+		}
+	} else if (wp->panorama_role == PANORAMA_SLAVE && wp->panorama_sibling != NULL) {
+		/* Slave destroyed: clear master's reference */
+		wp->panorama_sibling->panorama_sibling = NULL;
+		wp->panorama_sibling->panorama_role = PANORAMA_NONE;
+	}
+
 	window_pane_reset_mode_all(wp);
 	free(wp->searchstr);
 
@@ -991,7 +1035,6 @@ window_pane_destroy(struct window_pane *wp)
 		input_free(wp->ictx);
 
 	screen_free(&wp->status_screen);
-
 	screen_free(&wp->base);
 
 	if (wp->pipe_fd != -1) {
@@ -1043,6 +1086,13 @@ window_pane_read_callback(__unused struct bufferevent *bufev, void *data)
 			control_write_output(c, wp);
 	}
 	input_parse_pane(wp);
+
+	/* If this is a panorama master, also redraw the slave pane */
+	if (wp->panorama_role == PANORAMA_MASTER && wp->panorama_sibling != NULL) {
+		wp->panorama_sibling->flags |= PANE_REDRAW;
+		server_redraw_window(wp->window);
+	}
+
 	bufferevent_disable(wp->event, EV_READ);
 }
 
@@ -1078,6 +1128,8 @@ window_pane_resize(struct window_pane *wp, u_int sx, u_int sy)
 {
 	struct window_mode_entry	*wme;
 	struct window_pane_resize	*r;
+	struct window_pane		*master;
+	u_int				 combined_sx;
 
 	if (sx == wp->sx && sy == wp->sy)
 		return;
@@ -1095,7 +1147,43 @@ window_pane_resize(struct window_pane *wp, u_int sx, u_int sy)
 	wp->sy = sy;
 
 	log_debug("%s: %%%u resize %ux%u", __func__, wp->id, sx, sy);
-	screen_resize(&wp->base, sx, sy, wp->base.saved_grid == NULL);
+
+	/* Handle panorama pane resize */
+	if (wp->panorama_role == PANORAMA_MASTER && wp->panorama_sibling != NULL) {
+		/* Master pane: resize screen to combined height (vertical panorama) */
+		u_int combined_sy = sy + wp->panorama_sibling->sy;
+		screen_resize(&wp->base, sx, combined_sy, wp->base.saved_grid == NULL);
+		/* Update slave's row offset */
+		wp->panorama_sibling->panorama_row_offset = sy;
+		wp->panorama_sibling->flags |= PANE_REDRAW;
+		/* Sync PTY size to combined height */
+		if (wp->fd != -1) {
+			struct winsize ws;
+			memset(&ws, 0, sizeof ws);
+			ws.ws_col = sx;
+			ws.ws_row = combined_sy;
+			ioctl(wp->fd, TIOCSWINSZ, &ws);
+		}
+	} else if (wp->panorama_role == PANORAMA_SLAVE && wp->panorama_sibling != NULL) {
+		/* Slave pane: resize master's screen to combined height */
+		master = wp->panorama_sibling;
+		u_int combined_sy = master->sy + sy;
+		screen_resize(&master->base, sx, combined_sy, master->base.saved_grid == NULL);
+		/* Update row offset */
+		wp->panorama_row_offset = master->sy;
+		master->flags |= PANE_REDRAW;
+		/* Sync master's PTY size to combined height */
+		if (master->fd != -1) {
+			struct winsize ws;
+			memset(&ws, 0, sizeof ws);
+			ws.ws_col = sx;
+			ws.ws_row = combined_sy;
+			ioctl(master->fd, TIOCSWINSZ, &ws);
+		}
+	} else {
+		/* Normal pane */
+		screen_resize(&wp->base, sx, sy, wp->base.saved_grid == NULL);
+	}
 
 	wme = TAILQ_FIRST(&wp->modes);
 	if (wme != NULL && wme->mode->resize != NULL)
@@ -1253,7 +1341,10 @@ window_pane_key(struct window_pane *wp, struct client *c, struct session *s,
 		return (0);
 	}
 
-	if (wp->fd == -1 || wp->flags & PANE_INPUTOFF)
+	/* Allow panorama slaves (fd=-1) to route input to master */
+	if (wp->fd == -1 && wp->panorama_role != PANORAMA_SLAVE)
+		return (0);
+	if (wp->flags & PANE_INPUTOFF)
 		return (0);
 
 	if (input_key_pane(wp, key, m) != 0)
@@ -1277,6 +1368,9 @@ window_pane_visible(struct window_pane *wp)
 int
 window_pane_exited(struct window_pane *wp)
 {
+	/* Panorama slaves have fd == -1 intentionally, don't treat as exited */
+	if (wp->panorama_role == PANORAMA_SLAVE)
+		return ((wp->flags & PANE_EXITED) != 0);
 	return (wp->fd == -1 || (wp->flags & PANE_EXITED));
 }
 
@@ -1956,4 +2050,91 @@ window_pane_send_theme_update(struct window_pane *wp)
 	}
 
 	wp->flags &= ~PANE_THEMECHANGED;
+}
+
+/*
+ * Create a panorama slave pane that shares the master's PTY and screen.
+ * The slave displays columns [col_offset..col_offset+sx) of the master's screen.
+ */
+struct window_pane *
+window_pane_create_panorama_slave(struct window *w, struct window_pane *master,
+    u_int sx, u_int sy)
+{
+	struct window_pane	*wp;
+	char			 host[HOST_NAME_MAX + 1];
+
+	wp = xcalloc(1, sizeof *wp);
+	wp->window = w;
+	wp->options = options_create(w->options);
+	wp->flags = (PANE_STYLECHANGED|PANE_THEMECHANGED);
+
+	wp->id = next_window_pane_id++;
+	RB_INSERT(window_pane_tree, &all_window_panes, wp);
+
+	wp->fd = -1;  /* Slave has no PTY */
+
+	TAILQ_INIT(&wp->modes);
+	TAILQ_INIT(&wp->resize_queue);
+
+	wp->sx = sx;
+	wp->sy = sy;
+
+	wp->pipe_fd = -1;
+
+	wp->control_bg = -1;
+	wp->control_fg = -1;
+
+	style_set_scrollbar_style_from_option(&wp->scrollbar_style,
+	    wp->options);
+
+	/* Set up panorama linkage */
+	wp->panorama_role = PANORAMA_SLAVE;
+	wp->panorama_sibling = master;
+	wp->panorama_row_offset = master->sy;  /* Start after master's rows (vertical panorama) */
+
+	/* Also update master to point to slave */
+	master->panorama_role = PANORAMA_MASTER;
+	master->panorama_sibling = wp;
+
+	colour_palette_init(&wp->palette);
+	colour_palette_from_option(&wp->palette, wp->options);
+
+	/*
+	 * Initialize wp->base - many places in tmux access wp->base directly.
+	 * The slave's wp->base is initialized but wp->screen points to master's
+	 * screen for actual content rendering.
+	 */
+	screen_init(&wp->base, sx, sy, 0);
+	wp->screen = &wp->base;  /* Will be overridden for rendering via panorama logic */
+
+	window_pane_default_cursor(wp);
+
+	screen_init(&wp->status_screen, 1, 1, 0);
+
+	if (gethostname(host, sizeof host) == 0)
+		screen_set_title(&wp->status_screen, host);
+
+	return (wp);
+}
+
+/*
+ * Get the screen for a pane. For panorama slaves, returns the master's screen.
+ */
+struct screen *
+window_pane_get_screen(struct window_pane *wp)
+{
+	if (wp->panorama_role == PANORAMA_SLAVE && wp->panorama_sibling != NULL)
+		return (wp->panorama_sibling->screen);
+	return (wp->screen);
+}
+
+/*
+ * Trigger a redraw on both panes in a panorama pair.
+ */
+void
+window_pane_panorama_redraw(struct window_pane *wp)
+{
+	wp->flags |= PANE_REDRAW;
+	if (wp->panorama_sibling != NULL)
+		wp->panorama_sibling->flags |= PANE_REDRAW;
 }

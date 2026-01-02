@@ -114,12 +114,40 @@ cmd_capture_pane_history(struct args *args, struct cmdq_item *item,
 	struct window_mode_entry	*wme;
 	int				 n, join_lines, flags = 0;
 	u_int				 i, sx, top, bottom, tmp;
+	u_int				 panorama_offset = 0;
 	char				*cause, *buf, *line;
 	const char			*Sflag, *Eflag;
 	size_t				 linelen;
 
 	sx = screen_size_x(&wp->base);
-	if (args_has(args, 'a')) {
+	if (wp->panorama_role == PANORAMA_SLAVE && wp->panorama_sibling != NULL) {
+		/* Panorama slave: use master's screen/grid with offset */
+		struct window_pane *master = wp->panorama_sibling;
+		if (args_has(args, 'a')) {
+			gd = master->base.saved_grid;
+			if (gd == NULL) {
+				if (!args_has(args, 'q')) {
+					cmdq_error(item, "no alternate screen");
+					return (NULL);
+				}
+				return (xstrdup(""));
+			}
+			s = &master->base;
+		} else if (args_has(args, 'M')) {
+			wme = TAILQ_FIRST(&master->modes);
+			if (wme != NULL && wme->mode->get_screen != NULL) {
+				s = wme->mode->get_screen(wme);
+				gd = s->grid;
+			} else {
+				s = &master->base;
+				gd = master->base.grid;
+			}
+		} else {
+			s = &master->base;
+			gd = master->base.grid;
+		}
+		panorama_offset = wp->panorama_row_offset;
+	} else if (args_has(args, 'a')) {
 		gd = wp->base.saved_grid;
 		if (gd == NULL) {
 			if (!args_has(args, 'q')) {
@@ -132,7 +160,7 @@ cmd_capture_pane_history(struct args *args, struct cmdq_item *item,
 	} else if (args_has(args, 'M')) {
 		wme = TAILQ_FIRST(&wp->modes);
 		if (wme != NULL && wme->mode->get_screen != NULL) {
-			s = wme->mode->get_screen (wme);
+			s = wme->mode->get_screen(wme);
 			gd = s->grid;
 		} else {
 			s = &wp->base;
@@ -181,6 +209,26 @@ cmd_capture_pane_history(struct args *args, struct cmdq_item *item,
 		tmp = bottom;
 		bottom = top;
 		top = tmp;
+	}
+
+	/*
+	 * Panorama mode: Left=overflow (top), Right=active (bottom)
+	 * Slave (LEFT) captures TOP half of combined screen (overflow)
+	 * Master (RIGHT) captures BOTTOM half of combined screen (cursor)
+	 */
+	if (wp->panorama_role == PANORAMA_SLAVE && wp->panorama_sibling != NULL) {
+		/* Slave (LEFT): capture top half (overflow) */
+		top = gd->hsize;
+		bottom = top + wp->sy - 1;
+		if (bottom > gd->hsize + gd->sy - 1)
+			bottom = gd->hsize + gd->sy - 1;
+	} else if (wp->panorama_role == PANORAMA_MASTER && wp->panorama_sibling != NULL) {
+		/* Master (RIGHT): capture bottom half (cursor area) */
+		u_int offset = wp->panorama_sibling->sy;
+		top = gd->hsize + offset;
+		bottom = top + wp->sy - 1;
+		if (bottom > gd->hsize + gd->sy - 1)
+			bottom = gd->hsize + gd->sy - 1;
 	}
 
 	join_lines = args_has(args, 'J');

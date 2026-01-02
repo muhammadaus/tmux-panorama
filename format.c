@@ -2009,6 +2009,9 @@ static void *
 format_cb_pane_dead(struct format_tree *ft)
 {
 	if (ft->wp != NULL) {
+		/* Panorama slaves have fd == -1 intentionally, not dead */
+		if (ft->wp->panorama_role == PANORAMA_SLAVE)
+			return (xstrdup("0"));
 		if (ft->wp->fd == -1)
 			return (xstrdup("1"));
 		return (xstrdup("0"));
@@ -2209,6 +2212,41 @@ format_cb_pane_path(struct format_tree *ft)
 			return (xstrdup(""));
 		return (xstrdup(ft->wp->base.path));
 	}
+	return (NULL);
+}
+
+/* Callback for pane_panorama_role. */
+static void *
+format_cb_pane_panorama_role(struct format_tree *ft)
+{
+	if (ft->wp != NULL) {
+		switch (ft->wp->panorama_role) {
+		case PANORAMA_MASTER:
+			return (xstrdup("master"));
+		case PANORAMA_SLAVE:
+			return (xstrdup("slave"));
+		default:
+			return (xstrdup("none"));
+		}
+	}
+	return (NULL);
+}
+
+/* Callback for pane_panorama_offset. */
+static void *
+format_cb_pane_panorama_offset(struct format_tree *ft)
+{
+	if (ft->wp != NULL)
+		return (format_printf("%u", ft->wp->panorama_row_offset));
+	return (NULL);
+}
+
+/* Callback for pane_panorama_screen_y (for debugging). */
+static void *
+format_cb_pane_panorama_screen_y(struct format_tree *ft)
+{
+	if (ft->wp != NULL)
+		return (format_printf("%u", screen_size_y(ft->wp->screen)));
 	return (NULL);
 }
 
@@ -3316,6 +3354,15 @@ static const struct format_table_entry format_table[] = {
 	},
 	{ "pane_path", FORMAT_TABLE_STRING,
 	  format_cb_pane_path
+	},
+	{ "pane_panorama_offset", FORMAT_TABLE_STRING,
+	  format_cb_pane_panorama_offset
+	},
+	{ "pane_panorama_role", FORMAT_TABLE_STRING,
+	  format_cb_pane_panorama_role
+	},
+	{ "pane_panorama_screen_y", FORMAT_TABLE_STRING,
+	  format_cb_pane_panorama_screen_y
 	},
 	{ "pane_pid", FORMAT_TABLE_STRING,
 	  format_cb_pane_pid

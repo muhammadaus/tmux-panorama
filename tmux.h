@@ -1254,6 +1254,14 @@ struct window_pane {
 
 	struct style	 scrollbar_style;
 
+	/* Panorama mode: two panes share a single PTY */
+	int		 panorama_role;
+#define PANORAMA_NONE   0
+#define PANORAMA_MASTER 1
+#define PANORAMA_SLAVE  2
+	struct window_pane *panorama_sibling;  /* sibling pane in panorama */
+	u_int		 panorama_row_offset;  /* row offset for rendering (vertical panorama) */
+
 	TAILQ_ENTRY(window_pane) entry;  /* link in list of all panes */
 	TAILQ_ENTRY(window_pane) sentry; /* link in list of last visited */
 	RB_ENTRY(window_pane) tree_entry;
@@ -3299,6 +3307,10 @@ struct window_pane *window_pane_find_up(struct window_pane *);
 struct window_pane *window_pane_find_down(struct window_pane *);
 struct window_pane *window_pane_find_left(struct window_pane *);
 struct window_pane *window_pane_find_right(struct window_pane *);
+struct window_pane *window_pane_create_panorama_slave(struct window *,
+		     struct window_pane *, u_int, u_int);
+struct screen	*window_pane_get_screen(struct window_pane *);
+void		 window_pane_panorama_redraw(struct window_pane *);
 void		 window_pane_stack_push(struct window_panes *,
 		     struct window_pane *);
 void		 window_pane_stack_remove(struct window_panes *,

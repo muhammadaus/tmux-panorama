@@ -893,10 +893,41 @@ screen_redraw_draw_pane(struct screen_redraw_ctx *ctx, struct window_pane *wp)
 	struct client		*c = ctx->c;
 	struct window		*w = c->session->curw->window;
 	struct tty		*tty = &c->tty;
-	struct screen		*s = wp->screen;
+	struct screen		*s;
 	struct colour_palette	*palette = &wp->palette;
 	struct grid_cell	 defaults;
 	u_int			 i, j, top, x, y, width;
+	u_int			 panorama_row_offset = 0;
+
+	/*
+	 * Panorama mode: Left = overflow (old), Right = active (cursor)
+	 * Slave (LEFT) shows TOP of combined screen (overflow) - offset 0
+	 * Master (RIGHT) shows BOTTOM of combined screen (cursor) - offset = slave height
+	 */
+	if (wp->panorama_role == PANORAMA_SLAVE && wp->panorama_sibling != NULL) {
+		/* Slave (LEFT) shows top half - overflow, no offset */
+		s = &wp->panorama_sibling->base;
+		panorama_row_offset = 0;
+		/* Defensive check - make sure sibling screen is valid */
+		if (screen_size_y(s) < wp->sy) {
+			log_debug("%s: panorama slave screen too small sy=%u pane_sy=%u",
+			    __func__, screen_size_y(s), wp->sy);
+			return;
+		}
+	} else if (wp->panorama_role == PANORAMA_MASTER && wp->panorama_sibling != NULL) {
+		/* Master (RIGHT) shows bottom half - cursor area */
+		s = &wp->base;
+		panorama_row_offset = wp->panorama_sibling->sy;
+		/* Defensive bounds check - screen may not be resized yet */
+		if (panorama_row_offset >= screen_size_y(s) ||
+		    panorama_row_offset + wp->sy > screen_size_y(s)) {
+			log_debug("%s: panorama master bounds exceeded offset=%u pane_sy=%u screen_sy=%u",
+			    __func__, panorama_row_offset, wp->sy, screen_size_y(s));
+			return;
+		}
+	} else {
+		s = wp->screen;
+	}
 
 	if (wp->base.mode & MODE_SYNC)
 		screen_write_stop_sync(wp);
@@ -941,7 +972,20 @@ screen_redraw_draw_pane(struct screen_redraw_ctx *ctx, struct window_pane *wp)
 		    __func__, c->name, wp->id, i, j, x, y, width);
 
 		tty_default_colours(&defaults, wp);
-		tty_draw_line(tty, s, i, j, width, x, y, &defaults, palette);
+		/* Apply panorama row offset when drawing from shared screen (vertical panorama) */
+		/* Bounds check: ensure row exists in grid before drawing */
+		if (j + panorama_row_offset >= screen_size_y(s)) {
+			log_debug("%s: skip row %u (offset %u) >= screen_y %u",
+			    __func__, j, panorama_row_offset, screen_size_y(s));
+			continue;
+		}
+		/* Additional safety: verify grid is valid and has enough lines */
+		if (s->grid == NULL || s->grid->linedata == NULL) {
+			log_debug("%s: grid or linedata NULL, skipping", __func__);
+			continue;
+		}
+		tty_draw_line(tty, s, i, j + panorama_row_offset, width, x, y,
+		    &defaults, palette);
 	}
 
 #ifdef ENABLE_SIXEL

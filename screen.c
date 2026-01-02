@@ -697,11 +697,12 @@ screen_alternate_off(struct screen *s, struct grid_cell *gc, int cursor)
 
 	/*
 	 * Turn history back on (so resize can use it) and then resize back to
-	 * the current size.
+	 * the current size. Skip reflow if size hasn't changed (panorama mode
+	 * uses combined height which was already saved correctly).
 	 */
 	if (s->saved_flags & GRID_HISTORY)
 		s->grid->flags |= GRID_HISTORY;
-	screen_resize(s, sx, sy, 1);
+	screen_resize(s, sx, sy, (sx != s->grid->sx || sy != s->grid->sy));
 
 	grid_destroy(s->saved_grid);
 	s->saved_grid = NULL;

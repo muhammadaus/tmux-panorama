@@ -403,17 +403,36 @@ input_key_build(void)
 int
 input_key_pane(struct window_pane *wp, key_code key, struct mouse_event *m)
 {
+	struct window_pane	*target_wp = wp;
+	struct screen		*s;
+	struct bufferevent	*bev;
+
 	if (log_get_level() != 0) {
 		log_debug("writing key 0x%llx (%s) to %%%u", key,
 		    key_string_lookup_key(key, 1), wp->id);
 	}
 
+	/* For panorama slave panes, route input to master's PTY */
+	if (wp->panorama_role == PANORAMA_SLAVE && wp->panorama_sibling != NULL)
+		target_wp = wp->panorama_sibling;
+
+	s = target_wp->screen;
+	bev = target_wp->event;
+
 	if (KEYC_IS_MOUSE(key)) {
-		if (m != NULL && m->wp != -1 && (u_int)m->wp == wp->id)
-			input_key_mouse(wp, m);
+		if (m != NULL && m->wp != -1 && (u_int)m->wp == wp->id) {
+			/* Adjust mouse coordinates for panorama slave (vertical panorama) */
+			if (wp->panorama_role == PANORAMA_SLAVE) {
+				struct mouse_event adjusted = *m;
+				adjusted.y += wp->panorama_row_offset;
+				input_key_mouse(target_wp, &adjusted);
+			} else {
+				input_key_mouse(wp, m);
+			}
+		}
 		return (0);
 	}
-	return (input_key(wp->screen, wp->event, key));
+	return (input_key(s, bev, key));
 }
 
 static void
