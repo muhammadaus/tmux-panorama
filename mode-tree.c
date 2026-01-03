@@ -503,7 +503,14 @@ mode_tree_start(struct window_pane *wp, struct args *args,
 	TAILQ_INIT(&mtd->children);
 
 	*s = &mtd->screen;
-	screen_init(*s, screen_size_x(&wp->base), screen_size_y(&wp->base), 0);
+	/*
+	 * For panorama master, use visible pane height, not combined screen
+	 * height. The master's wp->base has 2x height but pane only shows half.
+	 */
+	u_int sy = screen_size_y(&wp->base);
+	if (wp->panorama_role == PANORAMA_MASTER && wp->panorama_sibling != NULL)
+		sy = wp->sy;
+	screen_init(*s, screen_size_x(&wp->base), sy, 0);
 	(*s)->mode &= ~MODE_CURSOR;
 
 	return (mtd);
