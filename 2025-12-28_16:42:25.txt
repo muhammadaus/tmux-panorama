@@ -1,0 +1,65 @@
+⏺ Tmux Panorama Mode - Current Status Summary
+
+  What Panorama Mode Does
+
+  Creates two side-by-side panes sharing a single PTY. The PTY is sized to combined height (48 rows for two 24-row panes), allowing you to see more terminal output at once:
+  - Left pane (master): shows rows 0-23 of the PTY
+  - Right pane (slave): shows rows 24-47 of the PTY
+
+  Files Modified (from upstream tmux)
+
+  | File                          | Purpose                                                                          |
+  |-------------------------------|----------------------------------------------------------------------------------|
+  | tmux.h:1257-1263              | Added panorama_role, panorama_sibling, panorama_row_offset to window_pane struct |
+  | window.c:1996-2055            | window_pane_create_panorama_slave() - creates slave pane with no PTY             |
+  | window.c:1051-1053, 1110-1129 | Panorama-aware resize and redraw logic                                           |
+  | window.c:2058-2075            | window_pane_get_screen() and window_pane_panorama_redraw() helpers               |
+  | screen-redraw.c:900-956       | Renders slave pane from master's screen with row offset                          |
+  | input-keys.c:415-435          | Routes slave input to master's PTY, adjusts mouse coords                         |
+  | cmd-split-window.c:136-191    | -W flag triggers panorama mode                                                   |
+
+  Fixes Applied Today
+
+  1. Added layout_make_leaf() and layout_fix_panes() to properly integrate slave into layout system
+  2. Added window_pane_default_cursor() for slave pane initialization
+
+  Known Limitations
+
+  - capture-pane returns empty for slave (doesn't use panorama rendering logic)
+  - Some unused variable warnings in build
+
+  ---
+  Instructions to Verify Visually
+
+  # 1. Navigate to the tmux-panorama directory
+  cd /Users/muhammadaushijri/Desktop/git/tmux-panorama
+
+  # 2. Start tmux with the custom binary (use a separate socket to avoid conflicts)
+  ./tmux -S /tmp/panorama.sock new-session
+
+  # 3. Once inside tmux, create a panorama split:
+  #    Press: Ctrl-b :
+  #    Type:  split-window -W
+  #    Press: Enter
+
+  # 4. You should now see two side-by-side panes
+  #    Run a command that produces lots of output:
+  seq 1 100
+
+  # 5. Expected behavior:
+  #    - Left pane shows lines 1-24 (or similar range)
+  #    - Right pane shows lines 25-48 (the next 24 lines)
+  #    - Both panes scroll together as more output appears
+  #    - Typing in either pane sends input to the same shell
+
+  # 6. To exit:
+  exit
+  # Or: Ctrl-b : kill-server
+
+  What Success Looks Like
+
+  - Two panes side-by-side with same height
+  - Running seq 1 100 shows different row ranges in each pane
+  - The right pane shows content that continues from where the left pane ends
+  - Keyboard input works from either pane
+

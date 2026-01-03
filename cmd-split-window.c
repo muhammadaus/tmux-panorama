@@ -179,6 +179,13 @@ cmd_split_window_exec(struct cmd *self, struct cmdq_item *item)
 		/* Update slave's row offset to be master's visible height */
 		new_wp->panorama_row_offset = panorama_original_sy;
 
+		log_debug("PANORAMA: created split - master=%p slave=%p", wp, new_wp);
+		log_debug("PANORAMA: master pane %ux%u, screen %ux%u",
+		    wp->sx, wp->sy, screen_size_x(&wp->base), screen_size_y(&wp->base));
+		log_debug("PANORAMA: slave pane %ux%u, offset=%u",
+		    new_wp->sx, new_wp->sy, new_wp->panorama_row_offset);
+		log_debug("PANORAMA: combined PTY height=%u", combined_sy);
+
 		if (!args_has(args, 'd'))
 			cmd_find_from_winlink_pane(current, wl, wp, 0);  /* wp is master */
 		window_pop_zoom(wp->window);

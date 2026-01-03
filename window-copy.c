@@ -398,11 +398,10 @@ window_copy_clone_screen(struct screen *src, struct screen *hint, u_int *cx,
 }
 
 static struct window_copy_mode_data *
-window_copy_common_init(struct window_mode_entry *wme)
+window_copy_common_init(struct window_mode_entry *wme, struct screen *base)
 {
 	struct window_pane		*wp = wme->wp;
 	struct window_copy_mode_data	*data;
-	struct screen			*base = &wp->base;
 
 	wme->data = data = xcalloc(1, sizeof *data);
 
@@ -440,11 +439,20 @@ window_copy_init(struct window_mode_entry *wme,
 {
 	struct window_pane		*wp = wme->swp;
 	struct window_copy_mode_data	*data;
-	struct screen			*base = &wp->base;
+	struct screen			*base;
 	struct screen_write_ctx		 ctx;
 	u_int				 i, cx, cy;
 
-	data = window_copy_common_init(wme);
+	/*
+	 * For panorama mode, the slave pane has no content in its own screen.
+	 * All content is in the master's screen, so use that for copy mode.
+	 */
+	if (wp->panorama_role == PANORAMA_SLAVE && wp->panorama_sibling != NULL)
+		base = &wp->panorama_sibling->base;
+	else
+		base = &wp->base;
+
+	data = window_copy_common_init(wme, base);
 	data->backing = window_copy_clone_screen(base, &data->screen, &cx, &cy,
 	    wme->swp != wme->wp);
 
@@ -455,6 +463,16 @@ window_copy_init(struct window_mode_entry *wme,
 	} else {
 		data->cy = cy - screen_hsize(data->backing);
 		data->oy = 0;
+	}
+
+	if (wp->panorama_role != PANORAMA_NONE) {
+		log_debug("PANORAMA copy-mode: role=%s pane=%p",
+		    wp->panorama_role == PANORAMA_MASTER ? "MASTER" : "SLAVE", wp);
+		log_debug("PANORAMA copy-mode: screen=%ux%u backing=%ux%u",
+		    screen_size_x(&data->screen), screen_size_y(&data->screen),
+		    screen_size_x(data->backing), screen_size_y(data->backing));
+		log_debug("PANORAMA copy-mode: cx=%u cy=%u oy=%u hsize=%u",
+		    data->cx, data->cy, data->oy, screen_hsize(data->backing));
 	}
 
 	data->scroll_exit = args_has(args, 'e');
@@ -486,7 +504,7 @@ window_copy_view_init(struct window_mode_entry *wme,
 	struct screen			*base = &wp->base;
 	u_int				 sx = screen_size_x(base);
 
-	data = window_copy_common_init(wme);
+	data = window_copy_common_init(wme, base);
 	data->viewmode = 1;
 
 	data->backing = xmalloc(sizeof *data->backing);
