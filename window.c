@@ -1152,10 +1152,11 @@ window_pane_resize(struct window_pane *wp, u_int sx, u_int sy)
 	if (wp->panorama_role == PANORAMA_MASTER && wp->panorama_sibling != NULL) {
 		/* Master pane: resize screen to combined height (vertical panorama) */
 		u_int combined_sy = sy + wp->panorama_sibling->sy;
-		screen_resize(&wp->base, sx, combined_sy, wp->base.saved_grid == NULL);
+		screen_resize(&wp->base, sx, combined_sy, 0);  /* Disable reflow for panorama */
 		/* Update slave's row offset */
 		wp->panorama_sibling->panorama_row_offset = sy;
 		wp->panorama_sibling->flags |= PANE_REDRAW;
+		wp->flags |= PANE_REDRAW;  /* Redraw both panes to prevent artifacts */
 		/* Sync PTY size to combined height */
 		if (wp->fd != -1) {
 			struct winsize ws;
@@ -1168,10 +1169,11 @@ window_pane_resize(struct window_pane *wp, u_int sx, u_int sy)
 		/* Slave pane: resize master's screen to combined height */
 		master = wp->panorama_sibling;
 		u_int combined_sy = master->sy + sy;
-		screen_resize(&master->base, sx, combined_sy, master->base.saved_grid == NULL);
+		screen_resize(&master->base, sx, combined_sy, 0);  /* Disable reflow for panorama */
 		/* Update row offset */
 		wp->panorama_row_offset = master->sy;
 		master->flags |= PANE_REDRAW;
+		wp->flags |= PANE_REDRAW;  /* Redraw both panes to prevent artifacts */
 		/* Sync master's PTY size to combined height */
 		if (master->fd != -1) {
 			struct winsize ws;

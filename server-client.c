@@ -2969,16 +2969,38 @@ server_client_reset_state(struct client *c)
 		    wp->panorama_sibling != NULL) {
 			struct window_pane *slave = wp->panorama_sibling;
 			pano_off = slave->sy;
-			if (s->cy >= pano_off && s->cy < pano_off + wp->sy) {
+			if (s->cy < pano_off) {
+				/*
+				 * Cursor in slave's visible area (top half).
+				 * Show on slave pane only in alternate screen mode.
+				 */
+				cursor_cy = s->cy;
+				if (SCREEN_IS_ALTERNATE(s)) {
+					cursor = 1;
+					cx = slave->xoff + s->cx - ox;
+					cy = slave->yoff + cursor_cy - oy;
+					if (status_at_line(c) == 0)
+						cy += status_line_size(c);
+				}
+			} else if (s->cy < pano_off + wp->sy) {
 				/* Cursor in master's visible area - show it */
 				cursor_cy = s->cy - pano_off;
 			} else {
-				/* Cursor outside master's range - hide it */
+				/* Cursor outside visible range - hide it */
 				cursor_cy = wp->sy;
 			}
-		} else if (wp->panorama_role == PANORAMA_SLAVE) {
-			/* Slave pane NEVER shows cursor */
-			cursor_cy = wp->sy;
+		} else if (wp->panorama_role == PANORAMA_SLAVE &&
+		    wp->panorama_sibling != NULL) {
+			/*
+			 * Slave pane shows cursor only in alternate screen mode
+			 * (vim/neovim) when cursor is in slave's visible range.
+			 */
+			struct screen *master_s = wp->panorama_sibling->screen;
+			if (SCREEN_IS_ALTERNATE(master_s) && s->cy < wp->sy) {
+				cursor_cy = s->cy;
+			} else {
+				cursor_cy = wp->sy;
+			}
 		}
 
 		if (!cursor &&

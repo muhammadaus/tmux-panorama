@@ -47,13 +47,11 @@ After resizing the terminal window or dragging the pane border, green vertical l
 
 **Actual**: Green vertical lines remain visible, especially on the left side of the left pane.
 
-### Issue 3: Neovim Cursor Invisible on Left Pane
+### ~~Issue 3: Neovim Cursor Invisible on Left Pane~~ (FIXED)
 
 When using full-screen applications like neovim, and the cursor moves to the top half of the screen (which should display on the left pane), the cursor becomes invisible.
 
-**Expected**: When neovim's cursor is in the top half of the combined screen, it should be visible on the LEFT pane.
-
-**Actual**: Cursor is invisible/not rendered on the left pane.
+**Fixed**: Cursor now appears on the left pane when in alternate screen mode (vim/neovim) and the cursor is in the top half of the combined screen. The fix detects alternate screen mode using `SCREEN_IS_ALTERNATE` and positions the cursor on the slave pane accordingly.
 
 ### Issue 4: Resize Text Reflow
 
@@ -62,6 +60,14 @@ After resizing, text doesn't wrap/reflow correctly to fit the new pane dimension
 **Expected**: Text should reflow properly to the new width after resize.
 
 **Actual**: Text doesn't wrap to new dimensions correctly, leaving display corruption.
+
+### Issue 5: Copy Mode Not Supported
+
+Copy mode (scrollback) does not work properly in panorama mode. When entering copy mode, the slave pane doesn't synchronize with the master's scrollback position.
+
+**Expected**: Copy mode should work across both panes, showing unified scrollback history.
+
+**Status**: Not yet implemented.
 
 ## Key Source Files
 
